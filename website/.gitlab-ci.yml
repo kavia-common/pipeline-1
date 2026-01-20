@@ -135,3 +135,35 @@ deploy-prod-website:
     name: production
     url: https://$CLIENT_DOMAIN
     deployment_tier: production
+
+# -----------------------------------------------------------------------------
+# Base image build/publish (GitLab Container Registry)
+# -----------------------------------------------------------------------------
+variables:
+  # Default to publishing images into the current project registry namespace.
+  # This fixes "insufficient_scope" errors caused by attempting to push to a different project path.
+  WEBSITE_BASE_IMAGE: ${CI_REGISTRY_IMAGE}/website-base
+
+website-base-image:
+  extends: .base-docker-registry
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - website/**/*
+  variables:
+    # Allow override for cross-project publishing:
+    # If CI_REGISTRY_TARGET_IMAGE is set, use it as the target image repository path.
+    TARGET_IMAGE: ${CI_REGISTRY_TARGET_IMAGE:-$WEBSITE_BASE_IMAGE}
+    TAG_LATEST: ${TARGET_IMAGE}:latest
+    TAG_COMMIT: ${TARGET_IMAGE}:${CI_COMMIT_SHORT_SHA}
+  script:
+    # Best-effort pull for cache; do not fail pipeline if not permitted/doesn't exist.
+    - docker pull "$TAG_LATEST" || true
+
+    # Build without hard-requiring registry cache import.
+    # Using classic docker build here avoids BuildKit "cache importer" authorization hard-fail.
+    - docker build -t "$TAG_LATEST" -t "$TAG_COMMIT" -f website/Dockerfile website/. --build-arg AUTH_TOKEN="$CI_JOB_TOKEN"
+
+    - docker push "$TAG_COMMIT"
+    - docker push "$TAG_LATEST"
