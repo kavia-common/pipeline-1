@@ -1,0 +1,220 @@
+include:
+  - 'base.gitlab-ci.yml'
+
+.base-server:
+  image: rust:latest
+  before_script:
+    - cd server/
+    - apt-get update
+    - apt-get install -y protobuf-compiler
+    - git config --global credential.helper store
+    - echo "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com" > ~/.git-credentials
+    - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com".insteadOf ssh://git@gitlab.com
+    
+  rules:
+    - changes:
+        - server/**/*
+    
+.amazon-server:
+  extends: .amazon
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - server/**/*
+
+.deploy-server:
+  extends: .deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - server/**/*
+
+variables:
+  SERVER_IMAGE_NAME: $CLIENT_CODE/server
+  SERVER_TAG_LATEST: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVER_IMAGE_NAME:latest
+  SERVER_TAG_COMMIT: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVER_IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+  
+build-server:
+  extends: .base-server
+  stage: build
+  script:
+    - cargo build --verbose
+
+build-server-nightly:
+  extends: .base-server
+  stage: build
+  image: rustlang/rust:nightly
+  script:
+    - cargo build --verbose
+  when: manual
+
+lint-server:
+  extends: .base-server
+  stage: buildNonFunctional
+  needs: [build-server]
+  before_script:
+    - cd server/
+    - rustup component add clippy
+    - apt-get update
+    - apt-get install -y protobuf-compiler
+    - git config --global credential.helper store
+    - echo "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com" > ~/.git-credentials
+    - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com".insteadOf ssh://git@gitlab.com
+  script:
+    - cargo clippy --verbose
+
+dependencies-outdated-server:
+  extends: .base-server
+  stage: buildNonFunctional
+  needs: [build-server]
+  script:
+      - cargo update --verbose
+      - cargo build --verbose
+  when: manual
+
+dependencies-unused-server:
+  extends: .base-server
+  stage: buildNonFunctional
+  needs: [build-server]
+  before_script:
+    - cd server/
+    - apt-get update
+    - apt-get install -y protobuf-compiler
+    - git config --global credential.helper store
+    - echo "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com" > ~/.git-credentials
+    - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com".insteadOf ssh://git@gitlab.com
+    - cargo install cargo-udeps --locked
+  script:
+      - cargo +nightly udeps --all-targets
+  when: manual
+
+version-server:
+  extends: .base-server
+  stage: buildNonFunctional
+  needs: [build-server]
+  script:
+      - cargo update --verbose
+      - cargo hack check --rust-version --workspace --all-targets --ignore-private
+  when: manual
+
+test-server:
+  extends: .base-server
+  stage: test
+  needs: [build-server]
+  # image: docker:stable
+  # services:
+  #   - docker:dind
+  script:
+    - cargo test --verbose
+
+# coverage-server:
+  # stage: test
+  # image: rust:latest
+#   variables:
+#     # Set an environment variable which causes LLVM to write coverage data to the specified location. This is arbitrary, but the path passed to grcov (the first argument) must contain these files or the coverage data won't be noticed.
+#     LLVM_PROFILE_FILE: "target/coverage/%p-%m.profraw"
+#   script:
+#     # Run all your Rust-based tests
+#     - cargo test --workspace
+#     # Optionally, run some other command that exercises your code to get more coverage:
+#     - ./bin/integration-tests --foo bar
+#     # Create the output directory
+#     - mkdir target/coverage
+#     # This is a multi-line command. You can also write it all as one line if desired, just remove
+#     # the '|' and all the newlines.
+#     - |
+#         grcov
+#     # This path must match the setting in LLVM_PROFILE_FILE. If you're not getting the coverage
+#     # you expect, look for '.profraw' files in other directories.
+#         target/coverage
+#     # If your target dir is modified, this will need to match...
+#         --binary-path target/debug
+#     # Where the source directory is expected
+#         -s .
+#     # Where to write the output; this should be a directory that exists.
+#         -o target/coverage
+#     # Exclude coverage of crates and Rust stdlib code. If you get unexpected coverage results from
+#     # this (empty, for example), try different combinations of '--ignore-not-existing',
+#     # '--ignore "$HOME/.cargo/**"' and see what kind of filtering gets you the coverage you're
+#     # looking for.
+#         --keep-only 'src/*'
+#     # Doing both isn't strictly necessary, if you won't use the HTML version you can modify this
+#     # line.
+#         --output-types html,cobertura
+
+#     # Extract just the top-level coverage number from the XML report.
+#     - xmllint --xpath "concat('Coverage: ', 100 * string(//coverage/@line-rate), '%')" target/coverage/cobertura.xml
+#   coverage: '/Coverage: \d+(?:\.\d+)?/'
+#   artifacts:
+#     paths:
+#       - target/coverage/
+#     reports:
+#       coverage_report:
+#         coverage_format: cobertura
+#         path: target/coverage.xml
+
+benchmark-server:
+  extends: .base-server
+  stage: testNonFunctional
+  needs: [test-server]
+  script:
+    - cargo bench --verbose
+  when: manual
+
+# build-container-server:
+#   extends: .base
+#   stage: buildRelease
+#   needs: [test-server]
+#   script:
+#     - docker pull $SERVER_TAG_LATEST || true
+#     - docker build --cache-from $SERVER_TAG_LATEST -t $SERVER_TAG_COMMIT -t $SERVER_TAG_LATEST -f server/docker/Dockerfile server/. --build-arg AUTH_TOKEN=$CI_JOB_TOKEN
+#     - docker save -o build.tar $SERVER_TAG_COMMIT $SERVER_TAG_LATEST
+#   artifacts:
+#     paths:
+#       - build.tar
+    
+documentation-server:
+  extends: .base-server
+  stage: release
+  needs: [test-server]
+  script:
+    - cargo rustdoc --verbose
+  when: manual
+
+.deploy-service-server:
+  extends: .deploy-server
+  variables:
+    AWS_REGION: $AWS_REGION
+    AWS_ACCOUNT_ID: $AWS_ACCOUNT_ID
+    AWS_ECR_URL: $AWS_ECR_URL
+    REPO: $SERVER_REPO
+    TAG_LATEST: $SERVER_TAG_LATEST
+    TAG_COMMIT: $SERVER_TAG_COMMIT
+    DOCKERFILE: server/docker/Dockerfile
+    CONTEXT: server/.
+    BUILD_ARGS: --build-arg AUTH_TOKEN=$CI_JOB_TOKEN
+    IMAGE_NAME: $SERVER_IMAGE_NAME
+    AWS_ECS_TASK_DEFINITION: $CI_AWS_ECS_TASK_DEFINITION
+    AWS_ECS_CLUSTER: $CI_AWS_ECS_CLUSTER
+    AWS_ECS_SERVICE: $CI_AWS_ECS_SERVICE
+    AWS_ECS_TASK_IMAGE_NAME: $AWS_ECS_TASK_IMAGE_NAME_SERVER
+
+deploy-int-server:
+  extends: .deploy-service-server
+  stage: internal
+  needs: [test-server] # [build-container-server]
+  environment:
+    name: internal
+    url: https://$CLIENT_CODE.int.deepvisibility.co
+    deployment_tier: testing
+  when: on_success
+
+deploy-prod-server:
+  extends: .deploy-service-server
+  stage: production
+  needs: [deploy-int-server]
+  environment:
+    name: production
+    url: https://$CLIENT_DOMAIN
+    deployment_tier: production
+    

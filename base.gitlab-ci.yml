@@ -1,0 +1,78 @@
+variables:
+  DOCKER_TLS_CERTDIR: ""
+  AWS_ECR_URL: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+  DOCKER_AUTH_CONFIG: |
+    {
+      "auths": {
+        "${CI_REGISTRY}": {
+          "username": "${CI_REGISTRY_USER}",
+          "password": "${CI_REGISTRY_PASSWORD}"
+        }
+      }
+    }
+
+include:
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+# - template: Jobs/Container-Scanning.gitlab-ci.yml
+# - template: Jobs/Code-Quality.gitlab-ci.yml
+# - template: Security/SAST.gitlab-ci.yml
+# - template: Security/DAST.gitlab-ci.yml # dast stage
+# - template: Verify/Browser-Performance.gitlab-ci.yml
+# - template: Verify/Accessibility.gitlab-ci.yml
+# - template: Verify/Load-Performance-Testing.gitlab-ci.yml
+# https://github.com/wagoodman/dive to analyze container efficiency
+
+stages:
+  - build
+  - buildNonFunctional
+  - test
+  - testIntegration
+  - testNonFunctional
+  - buildRelease
+  - release
+  - internal
+  - uat
+  - production
+
+.base-docker:
+  image: docker:stable
+  services:
+    - docker:dind
+
+.amazon:
+  extends: .base-docker
+  before_script:
+    - ntpd -d -q -n -p uk.pool.ntp.org
+    - apk add --no-cache python3 py3-pip jq
+    - pip3 install --no-cache-dir awscli
+
+.deploy:
+  extends: .amazon
+  when: manual
+  rules:
+    - exists:
+      - $AWS_REGION
+      - $AWS_ACCOUNT_ID
+      - $TAG_LATEST
+      - $TAG_COMMIT
+      - $DOCKERFILE
+      - $CONTEXT
+      - $BUILD_ARGS
+      - $IMAGE_NAME
+      - $TAG_COMMIT
+      - $AWS_ECS_TASK_DEFINITION
+      - $AWS_ECS_CLUSTER
+      - $AWS_ECS_SERVICE
+      - $AWS_ECS_TASK_IMAGE_NAME
+  script:
+    - aws ecr get-login-password --region $AWS_REGION |
+      docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+    - docker pull $TAG_LATEST || true
+    - docker build --cache-from $TAG_LATEST -t $TAG_COMMIT -t $TAG_LATEST -f $DOCKERFILE $CONTEXT $BUILD_ARGS
+    - docker push $TAG_COMMIT
+    - docker push $TAG_LATEST
+    - IMAGE_SHA256=$(aws ecr describe-images --region "$AWS_REGION" --repository-name "$IMAGE_NAME" --image-ids imageTag="$CI_COMMIT_SHORT_SHA" --query 'sort_by(imageDetails,& imagePushedAt)[*].imageDigest' --output=text)
+    - TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition "$AWS_ECS_TASK_DEFINITION" --region "$AWS_REGION")
+    - NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "$TAG_COMMIT@$IMAGE_SHA256" --arg NAME "$AWS_ECS_TASK_IMAGE_NAME" '.taskDefinition | .containerDefinitions |= map(if .name == $NAME then .image = $IMAGE else . end) | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+    - NEW_REVISION=$(aws ecs register-task-definition --region "$AWS_REGION" --cli-input-json "$NEW_TASK_DEFINITION")
+    - aws ecs update-service --region "$AWS_REGION" --cluster $AWS_ECS_CLUSTER --service $AWS_ECS_SERVICE --task-definition $AWS_ECS_TASK_DEFINITION --force-new-deployment

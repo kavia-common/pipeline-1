@@ -1,0 +1,84 @@
+include:
+  - 'base.gitlab-ci.yml'
+
+.base-ts:
+  image: node:20
+  rules:
+    - changes:
+        - "**/*"
+  before_script:
+    - npm ci
+
+build-ts:
+  extends: .base-ts
+  stage: build
+  script:
+    - npm run build
+    
+lint-ts:
+  extends: .base-ts
+  stage: buildNonFunctional
+  needs: [build-ts]
+  script:
+    - npm run lint
+
+dependencies-ts:
+  extends: .base-ts
+  stage: buildNonFunctional
+  needs: [build-ts]
+  script:
+    - npm audit
+  when: manual
+
+unit-ts:
+  stage: test
+  needs: [lint-ts]
+  extends: .base-ts
+  script:
+    - npm run test
+
+    #  javascript:
+#   image: node:latest
+#   stage: test
+#   before_script:
+#     - 'yarn global add jest'
+#     - 'yarn add --dev jest-junit'
+#   script:
+#     - 'jest --ci --reporters=default --reporters=jest-junit'
+#   artifacts:
+#     when: always
+#     reports:
+#       junit:
+#         - junit.xml
+
+documentation-ts:
+  stage: release
+  needs: [unit-ts]
+  extends: .base-ts
+  script:
+    - npm run storybook:build
+  when: manual
+
+release-ts:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs: [unit-ts]
+  variables:
+    PACKAGE_VERSION: $(node -p "require('./package.json').version")
+    LATEST_RELEASE_TAG: "$(curl --header 'Private-Token: $CI_JOB_TOKEN' 'https://gitlab.com/api/v4/projects/$CI_PROJECT_ID/releases' | jq -r '.[0].tag_name')"
+    GITLAB_TOKEN: $SEMANTIC_RELEASE_TOKEN
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_TAG == null && $PACKAGE_VERSION != $LATEST_VERSION
+  before_script:
+    - apk add --update npm git
+    - npm ci
+  script:
+    - npm run build
+    - touch .npmrc
+    - echo "${CI_API_V4_URL#http*:}/projects/${CI_PROJECT_ID}/packages/npm/:_authToken=${CI_JOB_TOKEN}" > .npmrc
+    # - npm run semantic-release
+    - npm publish
+  release:
+    tag_name: 'v$PACKAGE_VERSION'
+    description: 'v$PACKAGE_VERSION'
+    ref: '$CI_COMMIT_SHA'

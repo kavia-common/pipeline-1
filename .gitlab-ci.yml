@@ -1,0 +1,50 @@
+include:
+  - 'base.gitlab-ci.yml'
+
+before_script:
+  - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+
+.base-website:
+  extends: .base-docker
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - website/**/*
+
+website-base-image:
+  extends: .base-website
+  stage: release
+  variables:
+    TAG_LATEST: $CI_REGISTRY/platformbuilder/infrastructure/cicd/website-base:latest
+    TAG_COMMIT: $CI_REGISTRY/platformbuilder/infrastructure/cicd/website-base:$CI_COMMIT_SHORT_SHA
+  script:
+    - docker pull $TAG_LATEST || true
+    - docker build --cache-from $TAG_LATEST -t $TAG_LATEST -t $TAG_COMMIT -f website/Dockerfile website/. --build-arg AUTH_TOKEN=$CI_JOB_TOKEN
+    - docker push $TAG_COMMIT
+    - docker push $TAG_LATEST
+
+website-accessibility-image:
+  extends: .base-website
+  stage: release
+  needs: [website-base-image]
+  variables:
+    TAG_LATEST: $CI_REGISTRY/platformbuilder/infrastructure/cicd/accessibility:latest
+    TAG_COMMIT: $CI_REGISTRY/platformbuilder/infrastructure/cicd/accessibility:$CI_COMMIT_SHORT_SHA
+  script:
+    - docker pull $TAG_LATEST || true
+    - docker build --cache-from $TAG_LATEST -t $TAG_LATEST -t $TAG_COMMIT -f website/accessibility/Dockerfile website/accessibility/. --build-arg AUTH_TOKEN=$CI_JOB_TOKEN
+    - docker push $TAG_COMMIT
+    - docker push $TAG_LATEST
+
+website-integrationtest-image:
+  extends: .base-website
+  stage: release
+  needs: [website-base-image]
+  variables:
+    TAG_LATEST: $CI_REGISTRY/platformbuilder/infrastructure/cicd/website-integrationtest:latest
+    TAG_COMMIT: $CI_REGISTRY/platformbuilder/infrastructure/cicd/website-integrationtest:$CI_COMMIT_SHORT_SHA
+  script:
+    - docker pull $TAG_LATEST || true
+    - docker build --cache-from $TAG_LATEST -t $TAG_LATEST -t $TAG_COMMIT -f website/integrationTest/Dockerfile website/integrationTest/. --build-arg AUTH_TOKEN=$CI_JOB_TOKEN
+    - docker push $TAG_COMMIT
+    - docker push $TAG_LATEST

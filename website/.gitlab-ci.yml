@@ -1,0 +1,133 @@
+include:
+  - 'base.gitlab-ci.yml'
+
+.base-website:
+  image: node:20
+  variables:
+    FF_NETWORK_PER_BUILD: true
+  before_script:
+    - cd website/
+    - npm config set -- //gitlab.com/api/v4/packages/npm/:_authToken=${CI_JOB_TOKEN}
+    - npm config set @platformbuilder:registry https://gitlab.com/api/v4/packages/npm/
+    - touch .npmrc
+    - echo "@platformbuilder:registry=https://gitlab.com/api/v4/packages/npm/" > .npmrc
+    - echo "//gitlab.com/api/v4/projects/:_authToken=${CI_JOB_TOKEN}" > .npmrc
+    - touch .yarnrc.yml
+    - echo "npmScopes:" > .yarnrc.yml
+    - echo "\tplatformbuilder:" > .yarnrc.yml
+    - "echo \"\t\tnpmRegistryServer: 'https://gitlab.com/api/v4/packages/npm/'\" > .yarnrc.yml"
+    - echo "\n" > .yarnrc.yml
+    - echo "npmRegistries:" > .yarnrc.yml
+    - echo "\t//gitlab.com/api/v4/packages/npm/:" > .yarnrc.yml
+    - "echo \"\t\tnpmAlwaysAuth: true\" > .yarnrc.yml"
+    - "echo \"\t\tnpmAuthToken: '${CI_JOB_TOKEN}'\" > .yarnrc.yml"
+  rules:
+    - changes:
+        - website/**/*
+
+.amazon-website:
+  extends: .amazon
+  image: docker:stable
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - website/**/*
+
+.deploy-website:
+  extends: .deploy
+  image: docker:stable
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - website/**/*
+
+variables:
+  WEBSITE_IMAGE_NAME: $CLIENT_CODE/website
+  WEBSITE_TAG_LATEST: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$WEBSITE_IMAGE_NAME:latest
+  WEBSITE_TAG_COMMIT: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$WEBSITE_IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+  
+build-website:
+  extends: .base-website
+  stage: build
+  script:
+    - yarn install --frozen-lockfile --non-interactive
+    - yarn build
+  artifacts:
+    paths:
+      - website/node_modules/
+      - website/.next/
+
+lint-website:
+  extends: .base-website
+  stage: buildNonFunctional
+  needs: [build-website]
+  script:
+    - yarn lint
+  dependencies:
+    - build-website
+
+integrationTest-website:
+  extends: .base-website
+  image: ${CI_REGISTRY}/platformbuilder/infrastructure/cicd/website-integrationtest:latest
+  stage: testIntegration
+  needs: [lint-website, build-website]
+  script:
+    - yarn add @playwright/test
+    - cp /app/playwright.config.ts playwright.config.ts
+    - yarn test
+  when: manual
+    
+accessibility-website:
+  extends: .base-website
+  image: ${CI_REGISTRY}/platformbuilder/infrastructure/cicd/accessibility:latest
+  stage: testNonFunctional
+  needs: [lint-website, build-website] # [integrationTest-website, build-website]
+  script:
+    - yarn add lighthouse puppeteer
+    - nohup yarn start &
+    - cp /app/lighthouseScript.mjs lighthouseScript.mjs
+    - node lighthouseScript.mjs
+  when: manual
+  
+dependencies-website:
+  extends: .base-website
+  stage: testNonFunctional
+  needs: [lint-website] # [integrationTest-website]
+  script:
+    - yarn audit
+  when: manual
+
+.deploy-service-website:
+  extends: .deploy-website
+  variables:
+    IMAGE_NAME: $WEBSITE_IMAGE_NAME
+    TAG_LATEST: $WEBSITE_TAG_LATEST
+    TAG_COMMIT: $WEBSITE_TAG_COMMIT
+    AWS_ECS_TASK_IMAGE_NAME: $AWS_ECS_TASK_IMAGE_NAME_WEBSITE
+    DOCKERFILE: website/docker/Dockerfile
+    CONTEXT: website/.
+    AWS_REGION: $AWS_REGION
+    AWS_ACCOUNT_ID: $AWS_ACCOUNT_ID
+    BUILD_ARGS: --build-arg AUTH_TOKEN=$CI_JOB_TOKEN
+    AWS_ECS_TASK_DEFINITION: $CI_AWS_ECS_TASK_DEFINITION
+    AWS_ECS_CLUSTER: $CI_AWS_ECS_CLUSTER
+    AWS_ECS_SERVICE: $CI_AWS_ECS_SERVICE
+
+deploy-int-website:
+  extends: .deploy-service-website
+  stage: internal
+  needs: [lint-website] # [integrationTest-website]
+  environment:
+    name: internal
+    url: https://$CLIENT_CODE.int.deepvisibility.co
+    deployment_tier: testing
+  when: on_success
+
+deploy-prod-website:
+  extends: .deploy-service-website
+  stage: production
+  needs: [deploy-int-website]
+  environment:
+    name: production
+    url: https://$CLIENT_DOMAIN
+    deployment_tier: production

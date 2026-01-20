@@ -1,0 +1,85 @@
+include:
+  - 'base.gitlab-ci.yml'
+
+.base-server:
+  image: node:18
+  rules:
+    - changes:
+        - server/**/*
+  before_script:
+    - yarn --cwd server/ install
+    
+.amazon-server:
+  extends: .amazon
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - server/**/*
+
+.deploy-server:
+  extends: .deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - server/**/*
+
+variables:
+  SERVER_IMAGE_NAME: $CLIENT_CODE/server
+  SERVER_TAG_LATEST: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVER_IMAGE_NAME:latest
+  SERVER_TAG_COMMIT: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVER_IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+  
+build-server:
+  extends: .base-server
+  stage: build
+  script:
+    - yarn --cwd server/ build
+
+lint-server:
+  extends: .base-server
+  stage: buildNonFunctional
+  needs: [build-server]
+  script:
+    - yarn --cwd server/ lint
+
+dependencies-server:
+  extends: .base-server
+  stage: buildNonFunctional
+  needs: [build-server]
+  script:
+    - yarn --cwd server/ audit
+  when: manual
+
+.deploy-service-server:
+  extends: .deploy-server
+  variables:
+    IMAGE_NAME: $SERVER_IMAGE_NAME
+    TAG_LATEST: $SERVER_TAG_LATEST
+    TAG_COMMIT: $SERVER_TAG_COMMIT
+    AWS_ECS_TASK_IMAGE_NAME: $AWS_ECS_TASK_IMAGE_NAME_SERVER
+    DOCKERFILE: server/docker/Dockerfile
+    CONTEXT: server/.
+    AWS_REGION: $AWS_REGION
+    AWS_ACCOUNT_ID: $AWS_ACCOUNT_ID
+    BUILD_ARGS: --build-arg AUTH_TOKEN=$CI_JOB_TOKEN
+    AWS_ECS_TASK_DEFINITION: $CI_AWS_ECS_TASK_DEFINITION
+    AWS_ECS_CLUSTER: $CI_AWS_ECS_CLUSTER
+    AWS_ECS_SERVICE: $CI_AWS_ECS_SERVICE
+
+deploy-int-server:
+  extends: .deploy-service-server
+  stage: internal
+  needs: [lint-server]
+  environment:
+    name: internal
+    url: https://$CLIENT_CODE.int.deepvisibility.co
+    deployment_tier: testing
+  when: on_success
+
+deploy-server-prod:
+  extends: .deploy-service-server
+  stage: production
+  needs: [deploy-int-server]
+  environment:
+    name: production
+    url: https://$CLIENT_DOMAIN
+    deployment_tier: production
