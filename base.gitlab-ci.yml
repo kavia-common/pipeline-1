@@ -44,6 +44,7 @@ stages:
   before_script:
     - ntpd -d -q -n -p uk.pool.ntp.org
     # Install AWS CLI via Alpine packages (not pip) to avoid PEP 668 "externally managed environment".
+    # NOTE: Do NOT add python3/py3-pip here; deploying only needs aws-cli + jq.
     - apk add --no-cache jq aws-cli
 
 .deploy:

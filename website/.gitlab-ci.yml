@@ -40,6 +40,10 @@ include:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       changes:
         - website/**/*
+  before_script:
+    # Defensive: ensure AWS CLI is available even if upstream template changes.
+    - ntpd -d -q -n -p uk.pool.ntp.org
+    - apk add --no-cache jq aws-cli
 
 variables:
   WEBSITE_IMAGE_NAME: $CLIENT_CODE/website
