@@ -35,16 +35,16 @@ stages:
   - production
 
 .base-docker:
-  image: docker:stable
+  image: docker:25.0.3
   services:
-    - docker:dind
+    - docker:25.0.3-dind
 
 .amazon:
   extends: .base-docker
   before_script:
     - ntpd -d -q -n -p uk.pool.ntp.org
-    - apk add --no-cache python3 py3-pip jq
-    - pip3 install --no-cache-dir awscli
+    # Install AWS CLI via Alpine packages (not pip) to avoid PEP 668 "externally managed environment".
+    - apk add --no-cache jq aws-cli
 
 .deploy:
   extends: .amazon

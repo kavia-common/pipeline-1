@@ -27,7 +27,7 @@ include:
 
 .amazon-website:
   extends: .amazon
-  image: docker:stable
+  image: docker:25.0.3
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       changes:
@@ -35,7 +35,7 @@ include:
 
 .deploy-website:
   extends: .deploy
-  image: docker:stable
+  image: docker:25.0.3
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       changes:
